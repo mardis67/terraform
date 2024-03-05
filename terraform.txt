@@ -1,0 +1,388 @@
+
+# File: main.tf
+
+# Provider AWS
+provider "aws" {
+  region = "eu-west-1" # Irlanda
+
+# Crea un cluster EKS
+resource "aws_eks_cluster" "my_cluster" {
+  name     = "my-cluster"
+  role_arn = aws_iam_role.eks_cluster_role.arn
+
+  vpc_config {
+    subnet_ids = aws_subnet.public[*].id
+  }
+}
+
+# Crea un ruolo IAM per il cluster EKS
+resource "aws_iam_role" "eks_cluster_role" {
+  name = "eks-cluster-role"
+
+  assume_role_policy = jsonencode({
+    "Version" : "2012-10-17",
+    "Statement" : [
+      {
+        "Effect" : "Allow",
+        "Principal" : {
+          "Service" : "eks.amazonaws.com"
+        },
+        "Action" : "sts:AssumeRole"
+      }
+    ]
+  })
+}
+
+# Attach IAM policies to the EKS cluster role (e.g., for worker nodes)
+# Personalizza queste policy in base alle tue esigenze
+resource "aws_iam_role_policy_attachment" "eks_cluster_policy_attachment" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+  role       = aws_iam_role.eks_cluster_role.name
+}
+
+resource "aws_iam_role_policy_attachment" "eks_service_policy_attachment" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSServicePolicy"
+  role       = aws_iam_role.eks_cluster_role.name
+}
+
+# Crea un gruppo di sicurezza per i nodi del cluster EKS
+resource "aws_security_group" "eks_node_security_group" {
+  name        = "eks-node-security-group"
+  description = "Security group for EKS worker nodes"
+
+  vpc_id = aws_vpc.main.id
+
+  ingress {
+    from_port   = 0
+    to_port     = 65535
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 65535
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "eks-node-security-group"
+  }
+}
+
+# Crea un Auto Scaling Group per i nodi del cluster EKS
+resource "aws_autoscaling_group" "eks_node_asg" {
+  name                      = "eks-node-asg"
+  max_size                  = 5
+  min_size                  = 1
+  desired_capacity          = 2
+  vpc_zone_identifier       = aws_subnet.private[*].id
+  launch_configuration      = aws_launch_configuration.eks_node_launch_config.name
+  health_check_type         = "EC2"
+  health_check_grace_period = 300 # 5 minuti di grace period
+}
+
+# Crea una Launch Configuration per i nodi del cluster EKS
+resource "aws_launch_configuration" "eks_node_launch_config" {
+  name_prefix          = "eks-node-launch-config-"
+  image_id             = data.aws_ami.eks.id
+  instance_type        = "t3.medium" # Modifica in base alle tue esigenze
+  iam_instance_profile = aws_iam_instance_profile.eks_node_instance_profile.name
+
+  security_groups = [
+    aws_security_group.eks_node_security_group.id
+  ]
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# Crea un gruppo di sicurezza per il servizio
+resource "aws_security_group" "service_security_group" {
+  name        = "service-security-group"
+  description = "Security group for the microservice"
+
+  vpc_id = aws_vpc.main.id
+
+  # Regole di ingresso
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"] # Apri a tutti per ora, personalizza secondo necessità
+  }
+
+  # Regole di uscita
+  egress {
+    from_port   = 0
+    to_port     = 65535
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "service-security-group"
+  }
+}
+
+# Crea un servizio Kubernetes
+resource "kubernetes_service" "my_microservice" {
+  metadata {
+    name = "my-microservice"
+  }
+
+  spec {
+    selector = {
+      app = "my-microservice"
+    }
+
+    port {
+      port        = 80
+      target_port = 8080 # Porta su cui ascolta il tuo servizio
+    }
+
+    type = "LoadBalancer"
+
+    load_balancer_source_ranges = ["0.0.0.0/0"] # Apri a tutti per ora, personalizza secondo necessità
+  }
+}
+
+# Crea un'istanza Kubernetes del microservizio
+resource "kubernetes_deployment" "my_microservice_deployment" {
+  metadata {
+    name = "my-microservice-deployment"
+  }
+
+  spec {
+    replicas = 3 # Numero di repliche del microservizio
+
+    selector {
+      match_labels = {
+        app = "my-microservice"
+      }
+    }
+
+    template {
+      metadata {
+        labels = {
+          app = "my-microservice"
+        }
+      }
+
+      spec {
+        container {
+          image = "your-image" # Modifica con l'immagine del tuo microservizio
+          name  = "my-microservice"
+          ports {
+            container_port = 8080 # Porta su cui ascolta il tuo servizio
+          }
+        }
+      }
+    }
+  }
+}
+
+
+
+
+Ecco un esempio di configurazione Terraform che crea un'infrastruttura su AWS per pubblicare un microservizio ad alta scalabilità su Internet utilizzando Amazon EKS (Elastic Kubernetes Service), Auto Scaling e definendo dettagliatamente i security group, incluso il rendere scalabile il microservizio stesso:
+
+```hcl
+# File: main.tf
+
+# Provider AWS
+provider "aws" {
+  region = "us-east-1" # Modifica questa regione in base alle tue preferenze
+}
+
+# Crea un cluster EKS
+resource "aws_eks_cluster" "my_cluster" {
+  name     = "my-cluster"
+  role_arn = aws_iam_role.eks_cluster_role.arn
+
+  vpc_config {
+    subnet_ids = aws_subnet.public[*].id
+  }
+}
+
+# Crea un ruolo IAM per il cluster EKS
+resource "aws_iam_role" "eks_cluster_role" {
+  name = "eks-cluster-role"
+
+  assume_role_policy = jsonencode({
+    "Version" : "2012-10-17",
+    "Statement" : [
+      {
+        "Effect" : "Allow",
+        "Principal" : {
+          "Service" : "eks.amazonaws.com"
+        },
+        "Action" : "sts:AssumeRole"
+      }
+    ]
+  })
+}
+
+# Attach IAM policies to the EKS cluster role (e.g., for worker nodes)
+# Personalizza queste policy in base alle tue esigenze
+resource "aws_iam_role_policy_attachment" "eks_cluster_policy_attachment" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+  role       = aws_iam_role.eks_cluster_role.name
+}
+
+resource "aws_iam_role_policy_attachment" "eks_service_policy_attachment" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSServicePolicy"
+  role       = aws_iam_role.eks_cluster_role.name
+}
+
+# Crea un gruppo di sicurezza per i nodi del cluster EKS
+resource "aws_security_group" "eks_node_security_group" {
+  name        = "eks-node-security-group"
+  description = "Security group for EKS worker nodes"
+
+  vpc_id = aws_vpc.main.id
+
+  ingress {
+    from_port   = 0
+    to_port     = 65535
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 65535
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "eks-node-security-group"
+  }
+}
+
+# Crea un Auto Scaling Group per i nodi del cluster EKS
+resource "aws_autoscaling_group" "eks_node_asg" {
+  name                      = "eks-node-asg"
+  max_size                  = 5
+  min_size                  = 1
+  desired_capacity          = 2
+  vpc_zone_identifier       = aws_subnet.private[*].id
+  launch_configuration      = aws_launch_configuration.eks_node_launch_config.name
+  health_check_type         = "EC2"
+  health_check_grace_period = 300 # 5 minuti di grace period
+}
+
+# Crea una Launch Configuration per i nodi del cluster EKS
+resource "aws_launch_configuration" "eks_node_launch_config" {
+  name_prefix          = "eks-node-launch-config-"
+  image_id             = data.aws_ami.eks.id
+  instance_type        = "t3.medium" # Modifica in base alle tue esigenze
+  iam_instance_profile = aws_iam_instance_profile.eks_node_instance_profile.name
+
+  security_groups = [
+    aws_security_group.eks_node_security_group.id
+  ]
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# Crea un gruppo di sicurezza per il servizio
+resource "aws_security_group" "service_security_group" {
+  name        = "service-security-group"
+  description = "Security group for the microservice"
+
+  vpc_id = aws_vpc.main.id
+
+  # Regole di ingresso
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"] # Apri a tutti per ora, personalizza secondo necessità
+  }
+
+  # Regole di uscita
+  egress {
+    from_port   = 0
+    to_port     = 65535
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "service-security-group"
+  }
+}
+
+# Crea un servizio Kubernetes
+resource "kubernetes_service" "my_microservice" {
+  metadata {
+    name = "my-microservice"
+  }
+
+  spec {
+    selector = {
+      app = "my-microservice"
+    }
+
+    port {
+      port        = 80
+      target_port = 8080 # Porta su cui ascolta il tuo servizio
+    }
+
+    type = "LoadBalancer"
+
+    load_balancer_source_ranges = ["0.0.0.0/0"] # Apri a tutti per ora, personalizza secondo necessità
+  }
+}
+
+# Crea un'istanza Kubernetes del microservizio
+resource "kubernetes_deployment" "my_microservice_deployment" {
+  metadata {
+    name = "my-microservice-deployment"
+  }
+
+  spec {
+    replicas = 3 # Numero di repliche del microservizio
+
+    selector {
+      match_labels = {
+        app = "my-microservice"
+      }
+    }
+
+    template {
+      metadata {
+        labels = {
+          app = "my-microservice"
+        }
+      }
+
+      spec {
+        container {
+          image = "your-image" # Modifica con l'immagine del tuo microservizio
+          name  = "my-microservice"
+          ports {
+            container_port = 8080 # Porta su cui ascolta il tuo servizio
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+In questa configurazione Terraform:
+
+- Viene creato un cluster Amazon EKS con un ruolo IAM associato.
+- Viene creato un gruppo di sicurezza per i nodi del cluster EKS con regole di ingresso ed uscita aperte su tutte le porte e tutti gli indirizzi IP.
+- Viene configurato un Auto Scaling Group per gestire automaticamente la scalabilità dei nodi del cluster EKS.
+- Viene definita una Launch Configuration che specifica le caratteristiche delle istanze EC2 che verranno create automaticamente dall'Auto Scaling Group.
+- Viene creato un gruppo di sicurezza per il servizio del microservizio, con regole di ingresso che permettono il traffico sulla porta 80 da qualsiasi indirizzo IP 
+
+
